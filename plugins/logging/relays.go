@@ -2,8 +2,8 @@ package logging
 
 import (
 	"errors"
-	"maps"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -63,9 +63,10 @@ func (p *LoggerPlugin) PreRelayHook(ctx *schemas.BifrostContext, req *schemas.Bi
 			entry.App = &app
 		}
 	}
-	if len(req.Headers) > 0 {
-		entry.RequestHeadersParsed = boundedHeaders(schemas.RedactSensitiveHeaders(maps.Clone(req.Headers)))
-	}
+	// The same metadata LLM and MCP rows carry: the configured logging headers, every x-bf-lh-*
+	// label, the x-bf-dim-* dimensions, and the virtual key's metadata on top.
+	entry.MetadataParsed = mergeVirtualKeyMetadata(p.captureLoggingHeaders(ctx), ctx)
+	entry.RequestHeadersParsed = relayMatchedHeaders(ctx, req)
 	if len(req.Body) > 0 {
 		entry.RequestBody = boundedBody(req.Body)
 	}
@@ -87,6 +88,9 @@ func (p *LoggerPlugin) PostRelayHook(ctx *schemas.BifrostContext, resp *schemas.
 		entry = &logstore.RelayLog{ID: uuid.New().String(), RequestID: clampString(requestID, 255), Timestamp: time.Now().UTC(), Kind: logstore.RelayLogKindCall}
 	}
 	entry.ApplyGovernanceContext(ctx)
+	// Merged again here, as PostLLMHook does: the key's metadata is stamped by governance, which may
+	// run after this plugin's pre-hook, and the key's values win over caller-sent labels.
+	entry.MetadataParsed = mergeVirtualKeyMetadata(entry.MetadataParsed, ctx)
 	if resp != nil {
 		if entry.RelayName == "" {
 			entry.RelayName = clampString(resp.RelayName, 64)
@@ -103,9 +107,6 @@ func (p *LoggerPlugin) PostRelayHook(ctx *schemas.BifrostContext, resp *schemas.
 			overhead := latency - upstream
 			entry.UpstreamLatency = &upstream
 			entry.OverheadLatency = &overhead
-		}
-		if len(resp.Headers) > 0 {
-			entry.ResponseHeadersParsed = boundedHeaders(schemas.RedactSensitiveHeaders(maps.Clone(resp.Headers)))
 		}
 		if len(resp.Body) > 0 {
 			entry.ResponseBody = boundedBody(resp.Body)
@@ -151,9 +152,10 @@ func (p *LoggerPlugin) PostRelayHook(ctx *schemas.BifrostContext, resp *schemas.
 			p.logger.Warn("retain_content_in_object_storage does not apply to Relay Logs yet; content-disabled relay calls are dropped entirely")
 		})
 	}
+	// Metadata and the matched headers stay when content logging is off, as on LLM and MCP rows:
+	// the operator chose them; only the bodies and the query string are content.
 	if !policy.storeContent || policy.hidden {
 		entry.RequestBody, entry.ResponseBody = nil, nil
-		entry.RequestHeadersParsed, entry.ResponseHeadersParsed = nil, nil
 		if i := strings.IndexByte(entry.Path, '?'); i >= 0 {
 			entry.Path = entry.Path[:i]
 		}
@@ -398,6 +400,37 @@ func boundedBody(body []byte) *string {
 	}
 	s := string(body)
 	return &s
+}
+
+// relayMatchedHeaders keeps the request headers the matched route matches on, since they are what
+// told the relay which route (and price) applied; they are relay-specific, so they live beside
+// the row's metadata rather than in it. They are read from the caller's full header map on the
+// context, as captureLoggingHeaders reads it, falling back to the relayed subset. Nothing else is
+// kept here, and the reply's headers never.
+func relayMatchedHeaders(ctx *schemas.BifrostContext, req *schemas.BifrostRelayRequest) map[string]string {
+	if len(req.RouteHeaders) == 0 {
+		return nil
+	}
+	source, _ := ctx.Value(schemas.BifrostContextKeyRequestHeaders).(map[string]string)
+	if len(source) == 0 {
+		source = req.Headers
+	}
+	var kept map[string]string
+	for name, value := range source {
+		// Names are lower-cased by the transport and the gateway; compare lower-cased anyway.
+		if slices.Contains(req.RouteHeaders, strings.ToLower(name)) {
+			if kept == nil {
+				kept = make(map[string]string, len(req.RouteHeaders))
+			}
+			kept[name] = value
+		}
+	}
+	if kept == nil {
+		return nil
+	}
+	// A route may match on a credential-like header; its value is redacted as the gateway redacts
+	// such headers everywhere else, so a matcher never turns the row into a credential store.
+	return boundedHeaders(schemas.RedactSensitiveHeaders(kept))
 }
 
 // relayHeaderValueLimit bounds one stored header value; the header count is bounded by the

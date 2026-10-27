@@ -405,6 +405,13 @@ func (m *Manager) Serve(ctx *schemas.BifrostContext, in Request) (*Result, *sche
 	}
 	if p.route != nil {
 		req.RoutePath = e.cfg.Routes[p.index].Path
+		if matchers := e.cfg.Routes[p.index].Headers; len(matchers) > 0 {
+			req.RouteHeaders = make([]string, 0, len(matchers))
+			for name := range matchers {
+				req.RouteHeaders = append(req.RouteHeaders, strings.ToLower(name))
+			}
+			sort.Strings(req.RouteHeaders)
+		}
 	}
 	if requestID, _ := ctx.Value(schemas.BifrostContextKeyRequestID).(string); requestID == "" {
 		ctx.SetValue(schemas.BifrostContextKeyRequestID, uuid.New().String())
