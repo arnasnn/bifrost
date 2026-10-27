@@ -345,6 +345,7 @@ var logstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"logs_add_is_passthrough_column"}, run: migrationAddIsPassthroughColumn},
 	{IDs: []string{"logs_add_warp_topic_tables"}, run: migrationAddWarpTopicTables},
 	{IDs: []string{"logs_add_warp_vector_deletes_table"}, run: migrationAddWarpVectorDeletesTable},
+	{IDs: []string{"add_relay_logs_table"}, run: migrationCreateRelayLogsTable},
 }
 
 // areThereAnyPendingMigrations returns true if there are any pending migrations to be applied.
@@ -3063,6 +3064,16 @@ var performanceIndexes = []performanceIndexDef{
 		table: "mcp_tool_logs",
 		name:  "idx_mcp_logs_app",
 		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_mcp_logs_app ON mcp_tool_logs(app)",
+	},
+	{
+		table: "relay_logs",
+		name:  "idx_relay_logs_user_agent",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_relay_logs_user_agent ON relay_logs(user_agent)",
+	},
+	{
+		table: "relay_logs",
+		name:  "idx_relay_logs_app",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_relay_logs_app ON relay_logs(app)",
 	},
 	{
 		table: "logs",
@@ -5935,4 +5946,33 @@ func isPassthroughColumnMigration(ctx context.Context, logger schemas.Logger) *m
 			return nil
 		},
 	}
+}
+
+// migrationCreateRelayLogsTable creates the Relay Logs table with the indexes its
+// struct tags declare, as agent_logs_init does: AutoMigrate creates the table and
+// only the indexes that do not exist yet, so a rerun after a partial apply is a
+// no-op. A new table, so it takes no lock on any existing one.
+func migrationCreateRelayLogsTable(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_relay_logs_table"
+	logger.Info("[logstore] starting migration %s", migrationName)
+	defer logger.Info("[logstore] finished migration %s", migrationName)
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := boundDDLLockWait(tx); err != nil {
+				return err
+			}
+			return tx.AutoMigrate(&RelayLog{})
+		},
+		Rollback: func(*gorm.DB) error {
+			return fmt.Errorf("%s is non-rollbackable: relay_logs holds recorded call history and charges, and dropping it would delete that content rather than reverse a schema change", migrationName)
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running %s migration: %s", migrationName, err.Error())
+	}
+	return nil
 }

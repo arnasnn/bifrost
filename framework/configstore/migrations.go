@@ -574,6 +574,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_warp_topic_discovery_min_requests_column"}, run: migrationAddWarpTopicDiscoveryMinRequestsColumn},
 	{IDs: []string{"add_azure_use_speech_endpoints_column"}, run: migrationAddAzureUseSpeechEndpointsColumn},
 	{IDs: []string{"add_azure_use_voice_live_endpoints_column"}, run: migrationAddAzureUseVoiceLiveEndpointsColumn},
+	{IDs: []string{"add_relays_tables"}, run: migrationAddRelaysTables},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -1188,6 +1189,21 @@ func rssFeedsIconURLColumnMigration(ctx context.Context, logger schemas.Logger, 
 			return fmt.Errorf("%s is non-rollbackable: dropping icon_url would permanently delete every custom feed logo; the column is additive and older binaries ignore it", migrationName)
 		},
 	}
+}
+
+// migrationAddRelaysTables creates the relay table and its virtual-key grant
+// table. Both are additive: older binaries ignore them.
+func migrationAddRelaysTables(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_relays_tables"
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			return tx.WithContext(ctx).AutoMigrate(&tables.TableRelay{}, &tables.TableVirtualKeyRelayGrant{})
+		},
+		Rollback: func(*gorm.DB) error {
+			return fmt.Errorf("%s is non-rollbackable: dropping the relay tables would permanently delete endpoints, their credentials and virtual-key grants", migrationName)
+		},
+	})
 }
 
 func rollbackAgentGatewayTables(*gorm.DB) error {
