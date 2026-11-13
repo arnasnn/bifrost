@@ -228,7 +228,7 @@ func (provider *ElevenlabsProvider) Speech(ctx *schemas.BifrostContext, key sche
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*ElevenlabsSpeechRequest, error) {
 			return ToElevenlabsSpeechRequest(request), nil
 		})
 
@@ -299,17 +299,17 @@ func (provider *ElevenlabsProvider) Speech(ctx *schemas.BifrostContext, key sche
 
 		if timestampResponse.Alignment != nil {
 			bifrostResponse.Alignment = &schemas.SpeechAlignment{
-				CharStartTimesMs: timestampResponse.Alignment.CharStartTimesMs,
-				CharEndTimesMs:   timestampResponse.Alignment.CharEndTimesMs,
-				Characters:       timestampResponse.Alignment.Characters,
+				CharacterStartTimesSeconds: timestampResponse.Alignment.CharacterStartTimesSeconds,
+				CharacterEndTimesSeconds:   timestampResponse.Alignment.CharacterEndTimesSeconds,
+				Characters:                 timestampResponse.Alignment.Characters,
 			}
 		}
 
 		if timestampResponse.NormalizedAlignment != nil {
 			bifrostResponse.NormalizedAlignment = &schemas.SpeechAlignment{
-				CharStartTimesMs: timestampResponse.NormalizedAlignment.CharStartTimesMs,
-				CharEndTimesMs:   timestampResponse.NormalizedAlignment.CharEndTimesMs,
-				Characters:       timestampResponse.NormalizedAlignment.Characters,
+				CharacterStartTimesSeconds: timestampResponse.NormalizedAlignment.CharacterStartTimesSeconds,
+				CharacterEndTimesSeconds:   timestampResponse.NormalizedAlignment.CharacterEndTimesSeconds,
+				Characters:                 timestampResponse.NormalizedAlignment.Characters,
 			}
 		}
 
@@ -344,7 +344,7 @@ func (provider *ElevenlabsProvider) SpeechStream(ctx *schemas.BifrostContext, po
 	jsonBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*ElevenlabsSpeechRequest, error) {
 			return ToElevenlabsSpeechRequest(request), nil
 		})
 
@@ -440,6 +440,7 @@ func (provider *ElevenlabsProvider) SpeechStream(ctx *schemas.BifrostContext, po
 		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.BodyStream(), provider.logger)
 		defer stopCancellation()
 		defer providerUtils.EnsureStreamFinalizerCalled(ctx, postHookSpanFinalizer)
+		defer providerUtils.RecoverStreamPanic(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer)
 
 		// read binary audio chunks from the stream
 		// 4KB buffer for reading chunks
